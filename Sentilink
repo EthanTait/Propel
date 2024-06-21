@@ -1,0 +1,169 @@
+def analyze_feature_splits_with_score(df, features, score_column, default_column):
+    results = {}
+    
+    for feature in features:
+        if feature not in df.columns:
+            continue
+        
+        # Calculate the median score for non-null rows of the feature
+        non_null_df = df[df[feature].notnull() & pd.to_numeric(df[feature], errors='coerce').notnull()]
+        score_median = non_null_df[score_column].median()
+        
+        # Split the data into two groups based on the score median
+        below_median = non_null_df[non_null_df[score_column] <= score_median]
+        above_median = non_null_df[non_null_df[score_column] > score_median]
+        
+        # Calculate default rates for the feature within each score group
+        below_median_default_rate = below_median[default_column].mean()
+        above_median_default_rate = above_median[default_column].mean()
+        
+        # Split the below median group by the feature's median
+        below_feature_median = below_median[feature].median()
+        below_feature_below_median = below_median[below_median[feature] <= below_feature_median]
+        below_feature_above_median = below_median[below_median[feature] > below_feature_median]
+        
+        below_feature_below_default_rate = below_feature_below_median[default_column].mean()
+        below_feature_above_default_rate = below_feature_above_median[default_column].mean()
+        
+        # Split the above median group by the feature's median
+        above_feature_median = above_median[feature].median()
+        above_feature_below_median = above_median[above_median[feature] <= above_feature_median]
+        above_feature_above_median = above_median[above_median[feature] > above_feature_median]
+        
+        above_feature_below_default_rate = above_feature_below_median[default_column].mean()
+        above_feature_above_default_rate = above_feature_above_median[default_column].mean()
+        
+        # Store the results
+        results[feature] = {
+            'score_median': score_median,
+            'below_median_default_rate': below_median_default_rate,
+            'above_median_default_rate': above_median_default_rate,
+            'below_feature_median': below_feature_median,
+            'below_feature_below_default_rate': below_feature_below_default_rate,
+            'below_feature_above_default_rate': below_feature_above_default_rate,
+            'above_feature_median': above_feature_median,
+            'above_feature_below_default_rate': above_feature_below_default_rate,
+            'above_feature_above_default_rate': above_feature_above_default_rate
+        }
+    
+    return results
+
+# Example usage
+features_to_analyze = ['feature1', 'feature2']
+score_column = 'MK2rs'
+default_column = 'isFPD'
+results = analyze_feature_splits_with_score(org_filtered_df, features_to_analyze, score_column, default_column)
+import matplotlib.pyplot as plt
+import os
+
+def plot_and_save_image(feature, data, output_path):
+    plt.figure(figsize=(12, 8))
+        
+    plt.subplot(2, 1, 1)
+    bars = plt.bar(['Below Feature Median', 'Above Feature Median'], 
+                   [data['below_feature_below_default_rate'], data['below_feature_above_default_rate']],                       
+                   color=['blue', 'green'])
+    plt.xlabel('Group')
+    plt.ylabel('ever 30dpd')
+    plt.ylim(0, 1)
+    
+    for bar in bars:
+        yval = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2, yval + 0.01, round(yval, 4), ha='center', va='bottom')
+        
+    plt.subplot(2, 1, 2)
+    bars = plt.bar(['Below Feature Median', 'Above Feature Median'], 
+                   [data['above_feature_below_default_rate'], data['above_feature_above_default_rate']],
+                    color=['skyblue', 'lightgreen'])
+    plt.xlabel('Group')
+    plt.ylabel('ever 30dpd')
+    plt.ylim(0, 1)
+        
+    for bar in bars:
+        yval = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2, yval + 0.01, round(yval, 4), ha='center', va='bottom')
+        
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close()
+def create_feature_buckets(df, feature, default_column, num_buckets=10):
+    df['bucket'] = pd.qcut(df[feature], num_buckets, labels=False, duplicates='drop')
+    bucket_summary = df.groupby('bucket').agg(
+        count=('lead_sequence_id', 'size'),
+        mean_value=(feature, 'mean'),
+        default_rate=(default_column, 'mean')
+    ).reset_index()
+    return bucket_summary
+import openpyxl
+from openpyxl.styles import PatternFill
+
+def write_to_excel_with_plots_and_interpretation(results, output_file):
+    image_paths = []
+    interpretation_groups = []
+    
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        for feature, data in results.items():
+            df = pd.DataFrame({
+                'Metric': ['Below Feature Median Default Rate', 'Above Feature Median Default Rate'],
+                'Below MK2rs Median': [data['below_feature_below_default_rate'], data['below_feature_above_default_rate']],
+                'Above MK2rs Median': [data['above_feature_below_default_rate'], data['above_feature_above_default_rate']]
+            })
+            sheet_name = feature
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+            workbook = writer.book
+            worksheet = writer.sheets[sheet_name]
+            
+            worksheet.column_dimensions['A'].width = 28.00
+            worksheet.column_dimensions['B'].width = 20.00
+            worksheet.column_dimensions['C'].width = 20.00
+            
+            image_path = f'{feature}.png'
+            plot_and_save_image(feature, data, image_path)
+            image_paths.append(image_path)
+            
+            img = openpyxl.drawing.image.Image(image_path)
+            img.anchor = f'A5'
+            worksheet.add_image(img)
+            
+            interpretation = ""
+            if abs(data['below_feature_below_default_rate'] - data['below_feature_above_default_rate']) < 0.05 and abs(data['above_feature_below_default_rate'] - data['above_feature_above_default_rate']) < 0.05:
+                interpretation = "The MK2rs is effectively capturing the risk associated with this feature."
+                fill_color = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
+            elif data['below_feature_below_default_rate'] > data['below_feature_above_default_rate']:
+                interpretation = "The default rate is higher, indicating that lower values of this feature are associated with higher risk."
+                fill_color = PatternFill(start_color="F4CCCC", end_color="F4CCCC", fill_type="solid")
+            else:
+                interpretation = "The default rate is higher, indicating that higher values of this feature are associated with higher risk."
+                fill_color = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+            
+            worksheet['A46'] = "Interpretation:"
+            worksheet['B46'] = interpretation
+            
+            # Perform follow-up analysis with feature buckets
+            bucket_summary = create_feature_buckets(org_filtered_df, feature, 'isFPD')
+            bucket_summary.to_excel(writer, sheet_name=sheet_name, startrow=48, index=False)
+            
+            interpretation_groups.append((feature, interpretation, fill_color))
+    
+        # Create title page
+        title_page = pd.DataFrame(interpretation_groups, columns=['Feature', 'Interpretation Group', 'Color'])
+        title_page[['Feature', 'Interpretation Group']].to_excel(writer, sheet_name='Title Page', index=False)
+    
+    # Adjust column widths and set colors for the title page
+    workbook = writer.book
+    title_worksheet = workbook['Title Page']
+    title_worksheet.column_dimensions['A'].width = 28.00
+    title_worksheet.column_dimensions['B'].width = 28.00
+    
+    for i, (feature, interpretation, fill_color) in enumerate(interpretation_groups, start=2):
+        title_worksheet[f'A{i}'].fill = fill_color
+        title_worksheet[f'B{i}'].fill = fill_color
+    
+    # Clean up the saved images after the Excel file is closed
+    for image_path in image_paths:
+        if os.path.exists(image_path):
+            os.remove(image_path)
+
+# Example usage
+output_file = 'feature_analysis_report.xlsx'
+write_to_excel_with_plots_and_interpretation(results, output_file)
